@@ -1,0 +1,33 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# ---- 打包产物（PyInstaller）----
+build/
+dist/
+*.spec
+*.manifest
+
+# ---- 保险库数据：绝不能进仓库 ----
+# .pbk 是加密库，但连同备份一起提交仍有泄露风险，且没有意义
+*.pbk
+*.pbk.bak.*
+*.pbk.broken
+*.pbk.tmp
+
+# ---- 编辑器 / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- 系统 ----
+Thumbs.db
+desktop.ini
+.DS_Store

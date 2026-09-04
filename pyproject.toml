@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "passbook"
+version = "1.0.0"
+description = "纯本地离线密码管理器（Argon2id + AES-256-GCM，单文件加密库）"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Passbook contributors" }]
+keywords = ["password-manager", "cli", "encryption", "offline"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "argon2-cffi>=23.1.0",
+    "cryptography>=44.0.1",
+    "pyperclip>=1.8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pyinstaller>=6.0",
+]
+gui = [
+    "PySide6-Essentials>=6.6",
+]
+
+[project.scripts]
+passbook = "passbook.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["passbook*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: 跑测试
+        run: pytest -q
+
+  build:
+    name: 打包 Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,gui]"   # gui → PySide6，打包 GUI exe 必需
+      - name: 打包
+        run: python build.py
+      - name: 冒烟（CLI exe 非交互命令）
+        run: dist\passbook-cli.exe gen --len 16   # GUI exe 是 --windowed，无 stdout，不能用来跑命令
+      - uses: actions/upload-artifact@v4
+        with:
+          name: passbook-windows
+          path: dist/passbook.exe
