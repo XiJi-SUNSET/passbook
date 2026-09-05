@@ -5,6 +5,7 @@
 """
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -32,6 +33,51 @@ from .session import AUTO_LOCK_SECONDS, Session
 COPY_CLEAR_MS = 45_000  # 复制后 45 秒自动清空剪贴板（与 CLI 一致）
 
 _TYPE_LABELS = {"login": "登录", "note": "笔记", "card": "银行卡", "identity": "身份"}
+
+_LIST_PAD_X = 10  # 列表条目左右内边距（与 _item_widget 布局一致）
+
+
+class _EntryListItem(QWidget):
+    """列表条目卡片：标题 + 账号两行。
+
+    QLabel 不换行，超长文本会被直接裁掉。这里在每次尺寸变化时按实际可用宽度
+    做尾部省略（ElideRight），悬停仍能通过 tooltip 看到完整文字。
+    """
+
+    def __init__(self, entry: Entry, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._entry = entry
+        sub = entry.data.get("username") or _TYPE_LABELS.get(entry.type, entry.type)
+        self._title_text = entry.title or "（无标题）"
+        self._sub_text = f"{'★ ' if entry.favorite else ''}{sub}"
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(_LIST_PAD_X, 7, _LIST_PAD_X, 7)
+        layout.setSpacing(2)
+
+        self._title_label = QLabel()
+        self._title_label.setStyleSheet(f"color: {theme.INK}; font-weight: 600;")
+        self._sub_label = QLabel()
+        self._sub_label.setStyleSheet(f"color: {theme.INK_DIM}; font-size: 11px;")
+
+        layout.addWidget(self._title_label)
+        layout.addWidget(self._sub_label)
+        self._update_elide()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_elide()
+
+    def _update_elide(self) -> None:
+        avail = max(1, self.width() - _LIST_PAD_X * 2)
+        for label, text in ((self._title_label, self._title_text),
+                            (self._sub_label, self._sub_text)):
+            label.ensurePolished()  # 让 QSS 字体先落地，度量才准确
+            shown = QFontMetrics(label.font()).elidedText(
+                text, Qt.TextElideMode.ElideRight, avail
+            )
+            label.setText(shown)
+            label.setToolTip(text if shown != text else "")
 
 
 class MainWindow(QMainWindow):
@@ -228,18 +274,7 @@ class MainWindow(QMainWindow):
             self._clear_detail()
 
     def _item_widget(self, entry: Entry) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        layout.setContentsMargins(10, 7, 10, 7)
-        layout.setSpacing(2)
-        title = QLabel(entry.title or "（无标题）")
-        title.setStyleSheet(f"color: {theme.INK}; font-weight: 600;")
-        sub = entry.data.get("username") or _TYPE_LABELS.get(entry.type, entry.type)
-        subtitle = QLabel(f"{'★ ' if entry.favorite else ''}{sub}")
-        subtitle.setStyleSheet(f"color: {theme.INK_DIM}; font-size: 11px;")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
-        return w
+        return _EntryListItem(entry)
 
     def _on_selection_changed(self, current, _previous) -> None:
         if current is None:
