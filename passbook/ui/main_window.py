@@ -4,7 +4,7 @@
 库文件位置固定，界面里不提供任何"换库/选路径"的入口。
 """
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -34,14 +35,23 @@ COPY_CLEAR_MS = 45_000  # 复制后 45 秒自动清空剪贴板（与 CLI 一致
 
 _TYPE_LABELS = {"login": "登录", "note": "笔记", "card": "银行卡", "identity": "身份"}
 
-_LIST_PAD_X = 10  # 列表条目左右内边距（与 _item_widget 布局一致）
+_LIST_PAD_X = 10    # 列表条目左右内边距
+_LIST_PAD_TOP = 12  # 顶部留白：文字贴条目上沿时，标题上半会被裁掉一点，宁多勿少
+_LIST_PAD_BOTTOM = 8
+_LIST_SPACING = 3
+_ROW_BUFFER = 2     # 高度余量，防止字体度量舍入/样式差异导致文字被压
+_ROW_EXTRA = 5      # 每行字形富余：QLabel 行高按首选字体 Segoe UI 度量，中文
+                    # fallback 到雅黑字形更高，不给富余标题上下就会被裁
 
 
 class _EntryListItem(QWidget):
-    """列表条目卡片：标题 + 账号两行。
+    """列表条目卡片：标题 + 账号两行，超长文字尾部省略。
 
-    QLabel 不换行，超长文本会被直接裁掉。这里在每次尺寸变化时按实际可用宽度
-    做尾部省略（ElideRight），悬停仍能通过 tooltip 看到完整文字。
+    垂直裁切的坑：条目高度来自 widget.sizeHint()，而它若在 QSS 字体落地前用
+    默认小字体度量行高，会偏小；等 QSS 的 font-size 真正渲染时行高变大，条目
+    高度不够，QVBoxLayout 只能压缩 QLabel → 文字上下被裁（半截字）。
+    因此字体显式写在 label 自身 QSS（不依赖窗口样式传播时机），sizeHint() 按
+    已落地字体的真实行高计算并留余量，保证渲染时高度充足。
     """
 
     def __init__(self, entry: Entry, parent: QWidget | None = None) -> None:
@@ -52,17 +62,48 @@ class _EntryListItem(QWidget):
         self._sub_text = f"{'★ ' if entry.favorite else ''}{sub}"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(_LIST_PAD_X, 7, _LIST_PAD_X, 7)
-        layout.setSpacing(2)
+        layout.setContentsMargins(
+            _LIST_PAD_X, _LIST_PAD_TOP, _LIST_PAD_X, _LIST_PAD_BOTTOM
+        )
+        layout.setSpacing(_LIST_SPACING)
 
         self._title_label = QLabel()
-        self._title_label.setStyleSheet(f"color: {theme.INK}; font-weight: 600;")
+        self._title_label.setStyleSheet(
+            f"font-family: {theme.FONT_FAMILY}; font-size: {theme.FONT_SIZE}px; "
+            f"color: {theme.INK}; font-weight: 600;"
+        )
         self._sub_label = QLabel()
-        self._sub_label.setStyleSheet(f"color: {theme.INK_DIM}; font-size: 11px;")
+        self._sub_label.setStyleSheet(
+            f"font-family: {theme.FONT_FAMILY}; font-size: 11px; color: {theme.INK_DIM};"
+        )
+        # 样式先落地：无父窗口也能应用自身 QSS，之后所有度量都与最终渲染一致
+        self._title_label.ensurePolished()
+        self._sub_label.ensurePolished()
+
+        # 垂直方向钉死为内容行高：即使外部把条目高度算小了，QLabel 也不会被
+        # 压缩成半截字。高度 = 首选字体行高 + 字形富余，保证中文 fallback 字
+        # 形（雅黑更高）也完整落在 label 内，上下不被裁。
+        for label in (self._title_label, self._sub_label):
+            label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            label.setFixedHeight(
+                QFontMetrics(label.font()).height() + _ROW_EXTRA
+            )
 
         layout.addWidget(self._title_label)
         layout.addWidget(self._sub_label)
         self._update_elide()
+
+    def sizeHint(self) -> QSize:
+        """按真实渲染字体给高，宽保持内容宽度（item 实际宽由 QListView 决定）。"""
+        h = (QFontMetrics(self._title_label.font()).height() + _ROW_EXTRA
+             + QFontMetrics(self._sub_label.font()).height() + _ROW_EXTRA
+             + _LIST_PAD_TOP + _LIST_PAD_BOTTOM + _LIST_SPACING + _ROW_BUFFER)
+        w = (max(self._title_label.sizeHint().width(),
+                 self._sub_label.sizeHint().width())
+             + _LIST_PAD_X * 2)
+        return QSize(w, h)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -72,7 +113,6 @@ class _EntryListItem(QWidget):
         avail = max(1, self.width() - _LIST_PAD_X * 2)
         for label, text in ((self._title_label, self._title_text),
                             (self._sub_label, self._sub_text)):
-            label.ensurePolished()  # 让 QSS 字体先落地，度量才准确
             shown = QFontMetrics(label.font()).elidedText(
                 text, Qt.TextElideMode.ElideRight, avail
             )
@@ -175,12 +215,15 @@ class MainWindow(QMainWindow):
 
         self._detail_title = QLabel("未选择条目")
         self._detail_title.setProperty("brand", True)
+        # 标题可换行：超长标题不再被横向裁掉，完整显示
+        self._detail_title.setWordWrap(True)
         self._detail_meta = QLabel("")
         self._detail_meta.setProperty("dim", True)
 
         self._rows: dict[str, QLabel] = {}
         self._row_labels: dict[str, QLabel] = {}
         self._rows_layout = QVBoxLayout()
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
         self._rows_layout.setSpacing(8)
         for key in ("username", "password", "url"):
             self._rows[key] = self._build_row(key)
@@ -196,6 +239,7 @@ class MainWindow(QMainWindow):
         self._reveal_btn.hide()
 
         actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(theme.GAP)
         self._copy_btn = QPushButton("复制密码")
         self._copy_btn.setProperty("primary", True)
@@ -225,12 +269,17 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QHBoxLayout as Row
 
         row = Row()
+        # 清零默认边距：否则行内容比标题/备注整体右偏 ~10px，纵向列线不齐
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         label = QLabel({"username": "账号", "password": "密码", "url": "链接"}[key])
         label.setProperty("dim", True)
         label.setFixedWidth(60)
+        label.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._row_labels[key] = label
         value = QLabel("")
+        # 长账号/长链接可换行完整显示，不再横向溢出被裁
+        value.setWordWrap(True)
         value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         row.addWidget(label)
         row.addWidget(value, 1)
