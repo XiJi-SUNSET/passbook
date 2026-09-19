@@ -29,7 +29,10 @@ def _vault_with_data() -> Vault:
 
 
 def test_export_csv_escapes_formula_injection():
-    """以 = + - @ 开头的字段必须加 ' 前缀，防 Excel/Sheets 公式注入。"""
+    """以 = + - @ 开头的展示列必须加 ' 前缀；密码列例外，原样输出。
+
+    密码加了 ' 前缀会导致导入后密码改变、用户登录不上（审计 P0-2）。
+    """
     v = Vault()
     v.add_entry(Entry(type="login", data={
         "title": "=SUM(A1)", "url": "-https://x", "username": "+8613800000000",
@@ -39,7 +42,8 @@ def test_export_csv_escapes_formula_injection():
     assert "'=SUM(A1)" in csv_text
     assert "'-https://x" in csv_text
     assert "'+8613800000000" in csv_text
-    assert "'@cmd" in csv_text
+    assert "'@cmd" not in csv_text  # 密码列不经 _csv_safe
+    assert "@cmd" in csv_text
     assert "普通备注" in csv_text  # 普通值不加前缀
 
 

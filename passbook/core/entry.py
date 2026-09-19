@@ -59,8 +59,15 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
-@dataclass
+@dataclass(eq=False)
 class Entry:
+    """条目模型。
+
+    eq=False：实体按身份比较，并恢复可哈希。若用 dataclass 默认的 eq=True，
+    __hash__ 会被置空、且"字段值相同的两条独立条目"互为相等——那会让
+    Vault 内部的 index()/remove() 退化成值匹配（目前只是靠 id 唯一侥幸正确）。
+    """
+
     type: str = "login"
     data: dict = field(default_factory=dict)
     folder_id: str | None = None

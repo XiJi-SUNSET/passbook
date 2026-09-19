@@ -1,5 +1,38 @@
 # 变更记录
 
+## v1.0.2 — 2026-09-19（安全审计修复）
+
+依据 `docs/code-audit-2026-09-19.md` 逐条修复（P0×2 / P1×1 / P2×4 / P3×14，其中 1 条复核不成立）。
+
+### 数据与安全
+
+- **CSV 导出不再破坏密码**：`password` 列原样输出，不再加防公式注入的 `'` 前缀（加了会让导入后的密码变化、用户无法登录）；标题/链接/账号/备注列保留防护
+- **CLI 剪贴板清空不再落空**：一次性命令返回后进程立即退出，原 daemon 定时器根本不会触发；`--copy` 改为复制后提示「按回车清空剪贴板」，非交互输入时明确告知不会自动清空
+- **GUI「生成密码」补上自动清空**：`_generate` 与生成器对话框的「复制」按钮统一走自动清空逻辑
+- **缺字段不再裸 KeyError**：`Vault.from_dict` 翻译为 `FormatError`（提示 recover）；JSON 导入报「第 N 条缺少字段」；REPL 遇未闭合引号不再退出会话
+
+### 一致性
+
+- **「改主密码」叙事与实现对齐**：payload 的 AAD 绑定 wrapped_dek，换 KEK 后无法原样搬运「只重包 DEK」不成立——README / DESIGN / format-spec / 代码注释 / UI 文案统一改为「用新密码重新加密整个库」
+- GUI 改主密码的「当前主密码」输入框真正参与校验（此前打错也能改成功）
+- `change_password` 不再静默丢弃未保存的内存改动
+- CSV 导入真正去重（按标题/账号/链接），与提示语一致
+- `__version__` 与 pyproject / CHANGELOG 统一（新增测试防漂移）
+- 删除死代码 `UnlockDialog.get`
+
+### 健壮性与性能
+
+- 原子写的临时文件带 pid；POSIX 上补父目录 fsync（rename 持久化）
+- `Entry` / `Folder` / `Vault` 改 `eq=False`：实体按身份比较，恢复可哈希
+- `Vault.from_dict` 版本检查提到构造之前；`get_entry` 加 id 索引（O(n) → O(1)）
+- 主密码强度启发式收紧：`aaaaaaaaaa11` 这类重复堆砌判为 weak
+- CSV 导入不再写入空字段；`HEADER_TAG_LEN` / `WRAPPED_DEK_LEN` 单一来源
+- `favorite` 更新走 `update_entry`（时间戳正确刷新）；窗口关闭时摘除全局事件过滤器
+
+### 复核说明
+
+- 审计 P3#6（`NO_COLOR` 空值）复核不成立：规范要求「变量存在且非空」才禁用颜色，原实现符合规范，未改动
+
 ## v1.0.1 — 2026-09-05（缺陷修复）
 
 GUI 显示修复：

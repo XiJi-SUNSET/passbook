@@ -1,8 +1,11 @@
 """Vault 领域模型测试：CRUD / 软删回收站 / 搜索 / 文件夹 / 序列化。"""
 
+from dataclasses import replace
+
 import pytest
 
 from passbook.core.entry import Entry
+from passbook.core.exceptions import FormatError
 from passbook.core.vault import Vault
 
 
@@ -158,8 +161,26 @@ def test_to_from_dict_roundtrip():
 
 
 def test_from_dict_rejects_newer_version():
-    with pytest.raises(ValueError):
+    with pytest.raises(FormatError):
         Vault.from_dict({"format_version": 999, "folders": [], "entries": []})
+
+
+def test_entry_identity_semantics():
+    """eq=False：字段逐一相同也是不同实体；且恢复可哈希（审计 P3#7）。"""
+    e1 = _entry()
+    e2 = replace(e1)  # 字段完全相同的新对象
+    assert e1 == e1
+    assert e1 != e2
+    assert len({e1, e2}) == 2
+
+
+def test_get_entry_recovers_from_external_list_change():
+    """有人绕过 add_entry 直接改 entries：查询兜底扫描并自愈（审计 P3#12）。"""
+    v = Vault()
+    extra = _entry()
+    v.entries.append(extra)
+    assert v.get_entry(extra.id) is extra
+    assert v.get_entry(extra.id) is extra  # 第二次命中已修复的索引
 
 
 def test_invalid_entry_type_rejected():

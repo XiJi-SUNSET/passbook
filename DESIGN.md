@@ -13,7 +13,7 @@
 | 技术栈 | Python 3.12+ | 本地环境已有，开发快 |
 | 界面 | CLI + GUI(PySide6) 双形态 | 2026-09-04 GUI 完成：PySide6 而非原定的 tkinter（用户选了视觉优先；tkinter 自绘圆角/毛玻璃代价大于它省下的 40MB 体积）；核心/服务两层 CLI 与 GUI 共用 |
 | 加密 | Argon2id + AES-256-GCM (AEAD) | 业界 2026 主流组合，GCM 自带认证，比 CBC+HMAC 少一个出错点 |
-| 密钥结构 | 双层密钥 KEK → DEK | 改主密码只重包 DEK（毫秒级），不用重加密整个库 |
+| 密钥结构 | 双层密钥 KEK → DEK | 2026-09-19 修正：原设计"改主密码只重包 DEK"未落地——payload 的 AAD 绑定 wrapped_dek，换 KEK 后旧密文无法认证，实际为整体重加密（当前库规模开销可忽略） |
 | 条目模型 | type + 不透明加密 JSON blob | 抄 Bitwarden Cipher 设计，加"银行卡/SSH 密钥"等新类型不改 schema |
 | 存储 | 单文件 `.pbk`，原子写 + 自动轮转备份 | 密码库写坏无备份 = 数学意义上不可恢复 |
 | 文件格式 | 自建格式（明文头 + GCM 认证） | 参考 KDBX 简化，KDF 参数明文入头保证可迁移 |
@@ -104,7 +104,7 @@
 ```
 主密码 ──Argon2id(盐)──▶ KEK ──GCM──▶ 包 DEK
 DEK ──GCM──▶ 加密条目 JSON（gzip 压缩）
-改主密码 = 只重包 DEK，库内容不动
+改主密码 = 重派生 KEK + 整体重新加密（2026-09-19 修正，见 §1 决策摘要）
 ```
 
 ## 4. 数据模型
@@ -128,7 +128,7 @@ passbook open                       # 打开库（解锁会话）
 passbook lock                       # 锁定（清空内存中的 DEK/明文）
 passbook add [--type login]         # 新增条目
 passbook list [--folder X]          # 列表
-passbook get <id|title>             # 查看（password 复制到剪贴板，45s 自动清空）
+passbook get <id|title>             # 查看（--copy 复制到剪贴板，回车后清空）
 passbook search <关键词>             # 搜索（标题/用户名/URL）
 passbook edit <id> / rm <id>        # 编辑 / 删除（进回收站）
 passbook gen [--len 20] [--no-symbols]  # 生成强密码
@@ -145,12 +145,13 @@ passbook recover [--from 1|2]       # 从备份恢复（主库损坏时用）
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P1 加密层 ✅ 完成 | crypto + format：Argon2id/AES-GCM/文件读写/原子写/备份轮转 | 27 个单测全过（2026-09-02），含篡改/错密码/损坏文件用例 |
-| P2 领域层 ✅ 完成 | core 模型（Vault/Entry/Folder）+ vault_service（创建/打开/保存/锁定/改主密码） | 52 个单测全过（2026-09-02）；改主密码仅重包 DEK，数据不重输 |
-| P3 业务层 ✅ 完成 | entry_service + generator：CRUD/搜索/分类/软删/剪贴板自动清空 | 82 个单测全过（2026-09-02）；含剪贴板 45s 自动清空、标题必填、弱密码拒绝用例 |
+| P2 领域层 ✅ 完成 | core 模型（Vault/Entry/Folder）+ vault_service（创建/打开/保存/锁定/改主密码） | 52 个单测全过（2026-09-02）；改主密码后旧密码失效、新密码可开、数据完好（2026-09-19 修正：原"仅重包 DEK"未落地） |
+| P3 业务层 ✅ 完成 | entry_service + generator：CRUD/搜索/分类/软删/剪贴板自动清空 | 82 个单测全过（2026-09-02）；含剪贴板清空、标题必填、弱密码拒绝用例（2026-09-19：CLI 侧改为按回车清空） |
 | P4 界面层 ✅ 完成 | cli + io：全部命令 + 导入导出 + `-f` 便携路径 | 106 个单测全过（2026-09-02）；CLI 全流程走查覆盖 |
 | P5 打磨 ✅ 完成 | 恢复通道（`recover` 命令 + 备份探测）+ 破坏性测试 + 打包交付 | 126 个单测全过（2026-09-04）；覆盖 payload 篡改/截断/备份同坏/密码错不动库四条事故路径 |
 | P6 GUI ✅ 完成 | PySide6 界面（citrus 风格）+ 库路径固定 + 会话安全（清零/自动锁定） | 155 个单测全过（2026-09-04）；GUI offscreen 测试覆盖会话/对话框校验/主窗口流程 |
 | v1.0.0 ✅ | 正式版：版本号 + CHANGELOG + 安全审计修复（KDF 参数上限 / 改密码清备份 / CSV 注入） | 155 个单测全过；审计含密码学实现正向核查 |
+| v1.0.2 ✅ | 安全审计修复（`docs/code-audit-2026-09-19.md`：P0 剪贴板/CSV + P1 叙事对齐 + P2/P3 共 20 项） | 179 个单测全过（2026-09-19）；新增 5 个回归测试文件 |
 
 P5 补的两件事：
 
@@ -248,7 +249,7 @@ GUI 最小探针程序（PySide6+PyInstaller）实测启动成功、Qt platform 
 CLI `-f` 保留但 `help=SUPPRESS`（自动化测试与应急恢复用），界面/帮助里不出现。
 
 **GUI 会话内存策略**：主密码缓存为 `bytearray`，锁定时逐字节清零后丢弃引用；
-5 分钟无操作自动锁定（键鼠事件重置计时器）；复制密码 45s 后仅当剪贴板未被改写才清空。
+5 分钟无操作自动锁定（键鼠事件重置计时器）；GUI 复制密码 45s 后仅当剪贴板未被改写才清空（CLI 无事件循环/常驻进程，改为按回车清空）。
 
 **已知取舍（不重写语言的前提下承认并记录）**：
 - `Entry.data` 仍是不可变 `str`，条目敏感字段做不到覆写清零
@@ -264,5 +265,5 @@ tests/test_gui.py     GUI offscreen 测试（未装 PySide6 自动跳过）
 tests/test_paths.py   固定库路径测试
 ```
 
-测试：155 个全过（2026-09-04，v1.0.0 正式版）。分层铁律不变：`ui/` 只调 `services/`，
+测试：179 个全过（2026-09-19，v1.0.2）。分层铁律不变：`ui/` 只调 `services/`，
 不碰 crypto / format / io。

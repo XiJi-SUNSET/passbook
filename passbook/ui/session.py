@@ -65,8 +65,14 @@ class Session:
         """保存改动（用会话内缓存的主密码，不再打扰用户）。"""
         self.service.save(self._password_text())
 
-    def change_password(self, new_password: str) -> None:
-        """改主密码；旧密码立即清零，缓存换成新的。"""
+    def change_password(self, old_password: str, new_password: str) -> None:
+        """改主密码；旧密码立即清零，缓存换成新的。
+
+        old_password 是用户在界面上输入的当前主密码：必须在这里真校验，
+        不能只信任会话缓存，否则输入框形同虚设、打错也能改成功。
+        """
+        if old_password != self._password_text():
+            raise PassbookError("当前主密码不正确")
         self.service.change_password(self._password_text(), new_password)
         self._wipe()
         self._remember(new_password)

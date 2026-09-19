@@ -95,6 +95,18 @@ def test_change_password_wrong_old_fails(vault_path, fast_params):
         svc.change_password("wrong-old", "whatever")
 
 
+def test_change_password_keeps_unsaved_memory_changes(vault_path, fast_params):
+    """已解锁时改主密码不能静默丢弃未保存的内存改动（审计 P2 3.4）。"""
+    svc = VaultService(vault_path)
+    vault = svc.create(PASSWORD, params=fast_params)
+    vault.add_entry(Entry(data={"title": "未保存"}))  # 刻意不 save
+    svc.change_password(PASSWORD, "new-master-2026")
+
+    assert svc.vault.list_active()[0].title == "未保存"  # 内存对象未被重建
+    reopened = VaultService(vault_path).open("new-master-2026")
+    assert reopened.list_active()[0].title == "未保存"  # 改动随新密码落盘
+
+
 def test_save_after_lock_requires_unlock(vault_path, fast_params):
     svc = VaultService(vault_path)
     svc.create(PASSWORD, params=fast_params)

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..services.generator import generate, password_strength
 from . import theme
+from .clipboard import copy_with_auto_clear
 
 _MIN_MASTER_LEN_HINT = "建议 ≥ 10 位且含大小写与数字"
 
@@ -174,15 +175,9 @@ class UnlockDialog(_BaseDialog):
         self._clear_error()
         self.accept()
 
-    @staticmethod
-    def get(parent, path: str) -> tuple[str, bool]:
-        """返回 (密码, 是否确定)。"""
-        dlg = UnlockDialog(parent, path)
-        return dlg.password, dlg.exec() == QDialog.DialogCode.Accepted
-
 
 class ChangeMasterDialog(_BaseDialog):
-    """改主密码：库内容不重加密，只重包数据密钥。"""
+    """改主密码：会用新密码重新加密整个库。"""
 
     def __init__(self, parent=None, has_current: bool = True) -> None:
         super().__init__(parent, "修改主密码")
@@ -193,7 +188,7 @@ class ChangeMasterDialog(_BaseDialog):
         self._accept_weak = self._new_weak_override()
         self._new.textChanged.connect(lambda: self._reset_weak_override(self._accept_weak))
 
-        note = QLabel("库内容不会重新加密，仅重新包装数据密钥，瞬间完成。")
+        note = QLabel("改密码会用新密码重新加密整个库（当前规模下很快），旧密码立即失效。")
         note.setProperty("dim", True)
         note.setWordWrap(True)
 
@@ -267,6 +262,8 @@ class GeneratorDialog(_BaseDialog):
         self._upper = QCheckBox("含大写")
         self._upper.setChecked(True)
         self._no_ambiguous = QCheckBox("排除易混淆字符 0O1lI|")
+        self._copy_hint = QLabel("")
+        self._copy_hint.setProperty("dim", True)
 
         regenerate = QPushButton("重新生成")
         regenerate.clicked.connect(self._regenerate)
@@ -301,6 +298,7 @@ class GeneratorDialog(_BaseDialog):
         layout.addWidget(self._result)
         layout.addLayout(row)
         layout.addLayout(opts)
+        layout.addWidget(self._copy_hint)
         layout.addWidget(buttons)
 
         for w in (self._len, self._symbols, self._digits, self._upper, self._no_ambiguous):
@@ -325,9 +323,8 @@ class GeneratorDialog(_BaseDialog):
             self._show_error(str(e))
 
     def _copy(self) -> None:
-        from PySide6.QtWidgets import QApplication
-
-        QApplication.clipboard().setText(self._result.text())
+        copy_with_auto_clear(self._result.text())
+        self._copy_hint.setText("已复制，45 秒后自动清空")
 
     @property
     def password(self) -> str:

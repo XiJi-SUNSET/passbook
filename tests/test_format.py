@@ -1,6 +1,7 @@
 """文件格式端到端测试：往返、错误密码、篡改、原子写、备份轮转。"""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -85,7 +86,8 @@ def test_oversized_iterations_rejected(vault_path, fast_params):
 
 def test_no_tmp_leftover_after_save(vault_path, fast_params):
     _save(vault_path, fast_params)
-    assert not os.path.exists(f"{vault_path}.tmp")
+    # .tmp 名带 pid，用通配检查是否还有任何残留
+    assert list(Path(vault_path).parent.glob("*.tmp")) == []
 
 
 def test_backup_rotation_keeps_two(vault_path, fast_params):

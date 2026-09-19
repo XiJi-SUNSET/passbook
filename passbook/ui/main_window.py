@@ -27,11 +27,10 @@ from ..core.exceptions import PassbookError
 from ..io.exporter import export_csv, export_json
 from ..services.generator import generate
 from . import theme
+from .clipboard import copy_with_auto_clear
 from .dialogs import ChangeMasterDialog, GeneratorDialog
 from .entry_dialog import EntryDialog
 from .session import AUTO_LOCK_SECONDS, Session
-
-COPY_CLEAR_MS = 45_000  # 复制后 45 秒自动清空剪贴板（与 CLI 一致）
 
 _TYPE_LABELS = {"login": "登录", "note": "笔记", "card": "银行卡", "identity": "身份"}
 
@@ -398,8 +397,11 @@ class MainWindow(QMainWindow):
         if dlg.exec() != EntryDialog.DialogCode.Accepted:
             return
         try:
-            self._session.entries.update(self._current.id, dlg.data())
-            self._current.favorite = dlg.favorite()
+            # favorite 一并交给 service 更新：直接改对象会绕过 update_entry，
+            # 导致 updated_at / vault.updated_at 不刷新
+            self._session.entries.update(
+                self._current.id, dlg.data(), favorite=dlg.favorite()
+            )
             self._session.save()
         except (PassbookError, ValueError) as e:
             return self._warn(str(e))
@@ -425,10 +427,13 @@ class MainWindow(QMainWindow):
         pw = str(self._current.data.get("password", ""))
         if not pw:
             return
-        QApplication.clipboard().setText(pw)
-        self._copied = pw
-        self._count.setText("已复制密码，45 秒后自动清空")
-        QTimer.singleShot(COPY_CLEAR_MS, self._clear_clipboard)
+        self._copy_to_clipboard(pw, "已复制密码，45 秒后自动清空")
+
+    def _copy_to_clipboard(self, text: str, message: str) -> None:
+        """复制入口统一走这里：45 秒后自动清空（锁定/关窗时会再立即清一次）。"""
+        copy_with_auto_clear(text)
+        self._copied = text
+        self._count.setText(message)
 
     def _clear_clipboard(self) -> None:
         """仅当剪贴板内容仍是刚才复制的密码时才清，避免误清用户别处复制的内容。"""
@@ -440,18 +445,17 @@ class MainWindow(QMainWindow):
     def _generate(self) -> None:
         pw = GeneratorDialog.get(self)
         if pw:
-            QApplication.clipboard().setText(pw)
-            self._count.setText("已生成并复制密码（45 秒后自动清空）")
+            self._copy_to_clipboard(pw, "已生成并复制密码（45 秒后自动清空）")
 
     def _change_master(self) -> None:
         dlg = ChangeMasterDialog(self, has_current=True)
         if dlg.exec() != ChangeMasterDialog.DialogCode.Accepted:
             return
         try:
-            self._session.change_password(dlg.new_password)
+            self._session.change_password(dlg.old_password, dlg.new_password)
         except PassbookError as e:
             return self._warn(str(e))
-        QMessageBox.information(self, "完成", "主密码已更改（库内容未重新加密）")
+        QMessageBox.information(self, "完成", "主密码已更改（库已用新密码重新加密）")
 
     def _export(self) -> None:
         """一键导出明文副本：JSON 无损完整副本，或 CSV 迁移格式。
@@ -525,5 +529,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._clear_clipboard()
+        # 摘掉全局事件过滤器：否则已关闭的窗口不会被释放，旧计时器还在重置
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         self._session.lock()
         super().closeEvent(event)

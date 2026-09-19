@@ -94,3 +94,9 @@ def test_password_strength_ok():
 
 def test_password_strength_strong():
     assert password_strength("Abc123!@#xYz0u8Qw") == "strong"  # 16 位 + 4 类
+
+
+def test_password_strength_demotes_repetitive():
+    """长度/类别达标但字符重复堆砌，实际熵远低于字面（审计 P3#17）。"""
+    assert password_strength("aaaaaaaaaa11") == "weak"
+    assert password_strength("abcabcabc111") == "weak"

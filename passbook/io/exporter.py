@@ -26,8 +26,9 @@ _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 def _csv_safe(value) -> str:
     """给危险前缀字段加单引号，防 CSV 公式注入。
 
-    代价：极少数以 = + - @ 开头的值（如标题）走浏览器导入时会带上 ' 前缀，
-    但换来了"用 Excel/Sheets 打开导出文件不会执行公式"的安全底线。
+    只用于会被 Excel/Sheets 当单元格展示的列（标题/链接/用户名/备注）。
+    **密码列刻意不走这里**：password 是给浏览器/密码管理器导入用的，
+    加 ' 前缀会让导入后的密码变成另一个值，用户将无法登录。
     """
     v = str(value)
     if v.startswith(_CSV_FORMULA_PREFIXES):
@@ -61,7 +62,12 @@ def export_csv(vault: Vault) -> str:
         if e.type != "login":
             continue
         writer.writerow(
-            [_csv_safe(e.data.get(k, "")) for k in
-             ("title", "url", "username", "password", "notes")]
+            [
+                _csv_safe(e.data.get("title", "")),
+                _csv_safe(e.data.get("url", "")),
+                _csv_safe(e.data.get("username", "")),
+                e.data.get("password", ""),  # 密码原样输出，加前缀会改坏密码
+                _csv_safe(e.data.get("notes", "")),
+            ]
         )
     return out.getvalue()

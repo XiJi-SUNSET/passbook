@@ -1,17 +1,15 @@
-"""条目业务编排：增删改查 / 搜索 / 分类 / 软删 / 剪贴板。
+"""条目业务编排：增删改查 / 搜索 / 分类 / 软删。
 
 Vault 提供原子操作，这里把它们组合成"一个命令一个动作"的用例，
-并补充跨条目规则：标题必填、文件夹必须存在、复制密码带自动清空。
-"""
+并补充跨条目规则：标题必填、文件夹必须存在。
 
-import threading
+剪贴板不在这里：CLI 的清空时机由用户回车决定（见 cli._copy_password_interactive），
+GUI 由 QTimer 驱动；两边的进程/事件循环模型不同，无法共用一套定时器。
+"""
 
 from ..core.entry import ENTRY_TYPES, Entry
 from ..core.exceptions import PassbookError
 from ..core.vault import Vault
-
-_CLIPBOARD_TTL = 45.0  # 默认 45 秒后自动清空剪贴板
-_clipboard_timer: threading.Timer | None = None
 
 
 class EntryService:
@@ -42,14 +40,22 @@ class EntryService:
         self._vault.add_entry(entry)
         return entry
 
-    def update(self, entry_id: str, data: dict) -> Entry:
-        """部分更新：只合并传入的字段，不影响其他字段。"""
+    def update(
+        self, entry_id: str, data: dict, favorite: bool | None = None
+    ) -> Entry:
+        """部分更新：只合并传入的字段，不影响其他字段。
+
+        favorite 为 None 时保持原值；给出时一并更新并触发 updated_at
+        （避免调用方绕过 update_entry 直接改对象导致时间戳不更新）。
+        """
         entry = self.get(entry_id)
         merged = dict(entry.data)
         merged.update(data or {})
         if not str(merged.get("title", "")).strip():
             raise PassbookError("标题不能清空")
         entry.data = merged
+        if favorite is not None:
+            entry.favorite = favorite
         self._vault.update_entry(entry)
         return entry
 
@@ -96,40 +102,3 @@ class EntryService:
 
     def purge_trash(self) -> int:
         return self._vault.purge_trash()
-
-    # ---------- 剪贴板 ----------
-    def copy_password(self, entry_id: str, ttl: float = _CLIPBOARD_TTL) -> None:
-        """复制密码到剪贴板，ttl 秒后自动清空（内容已被改写则不动）。
-
-        pyperclip 延迟导入：CLI 依赖它，GUI 可替换实现；测试时 mock。
-        """
-        entry = self.get(entry_id)
-        password = str(entry.data.get("password", ""))
-        if not password:
-            raise PassbookError("该条目没有保存密码")
-        import pyperclip  # 延迟导入，避免污染无 GUI 环境
-
-        pyperclip.copy(password)
-        schedule_clipboard_clear(ttl, password)
-
-
-def schedule_clipboard_clear(ttl: float, expected: str) -> None:
-    """ttl 秒后若剪贴板内容仍是 expected 则清空（用户已改写则不动）。
-
-    模块级函数以便测试注入；重复调用会取消上一个定时器。
-    """
-    global _clipboard_timer
-    if _clipboard_timer is not None:
-        _clipboard_timer.cancel()
-
-    def _do() -> None:
-        try:
-            import pyperclip
-            if pyperclip.paste() == expected:
-                pyperclip.copy("")
-        except Exception:
-            pass  # 剪贴板不可用（无图形会话）时静默，不打断主流程
-
-    _clipboard_timer = threading.Timer(ttl, _do)
-    _clipboard_timer.daemon = True
-    _clipboard_timer.start()

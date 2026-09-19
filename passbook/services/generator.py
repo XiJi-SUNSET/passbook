@@ -104,15 +104,24 @@ def _char_kinds(password: str) -> int:
 def password_strength(password: str) -> str:
     """主密码强度分级：'weak' | 'ok' | 'strong'。
 
-    简单启发式（P5 用于拒绝弱主密码）：
+    启发式（用于"提醒"，不硬性拒绝）：
     - strong: 长度 >= 16 且覆盖 >= 3 类字符
     - ok:     长度 >= 10 且覆盖 >= 2 类字符
-    - weak:   其余
+    - weak:   其余，另含"字符重复堆砌"（如 aaaaaaaaaa11）
+
+    局限：识别不了字典词（如 password1234）。这是提醒而非校验的定位决定的，
+    真要防字典攻击得引入词表，收益与体积不成比例。
     """
     length = len(password)
     kinds = _char_kinds(password)
     if length >= 16 and kinds >= 3:
-        return "strong"
-    if length >= 10 and kinds >= 2:
-        return "ok"
-    return "weak"
+        grade = "strong"
+    elif length >= 10 and kinds >= 2:
+        grade = "ok"
+    else:
+        grade = "weak"
+    # 长度/类别达标但去重后字符极少：aaaaaaaaaa11、abcabcabc123 这类
+    # 表面够长，实际熵远低于字面，降级为 weak
+    if grade != "weak" and len(set(password)) <= 4:
+        grade = "weak"
+    return grade

@@ -10,6 +10,7 @@
 """
 
 import gzip
+import hmac
 
 from cryptography.exceptions import InvalidTag
 
@@ -17,15 +18,14 @@ from ..core.exceptions import CredentialsError, FormatError, PayloadChecksumErro
 from ..crypto.cipher import AesGcmCipher
 from ..crypto.kdf import derive_key
 from ..crypto.keys import (
+    HEADER_TAG_LEN,
+    WRAPPED_DEK_LEN,
     compute_header_tag,
     derive_data_key,
     derive_header_key,
     unwrap_dek,
 )
 from .header import HEADER_LEN, Header
-
-HEADER_TAG_LEN = 16
-WRAPPED_DEK_LEN = 48
 
 
 def load(path: str, password: str) -> bytes:
@@ -84,6 +84,4 @@ def inspect(path: str) -> Header:
 
 
 def _const_time_eq(a: bytes, b: bytes) -> bool:
-    import hmac
-
     return hmac.compare_digest(a, b)

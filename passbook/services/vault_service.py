@@ -52,16 +52,26 @@ class VaultService:
         gc.collect()
 
     def change_password(self, old_password: str, new_password: str) -> None:
-        """改主密码：用新密码重新加密同一份明文，毫秒级（数据不重输）。
+        """改主密码：用新密码重新加密整个库，并清掉旧备份。
+
+        关于"只重包 DEK"：payload 的 AAD 绑定了 wrapped_dek（见 format-spec），
+        换 KEK 必然改写 wrapped_dek，payload 无法原样搬运——所以这里是完整的
+        重新加密。当前库规模（几百 KB）下开销可忽略，文档不再宣称"只重包"。
 
         改完必须清掉旧备份——它们仍用**旧主密码**加密。改主密码的常见动机
         就是"旧密码可能已泄露"，留着旧密码能解开的备份等于没改。
+
+        已解锁时用内存中的库重新加密（未保存的改动不会被静默丢弃）；
+        未解锁（CLI 一次性命令）时从磁盘加载并校验旧密码。
         """
-        vault = self.open(old_password)  # 校验旧密码；失败抛 CredentialsError
+        if self._vault is None:
+            vault = self.open(old_password)  # 校验旧密码；失败抛 CredentialsError
+        else:
+            load(self.path, old_password)  # 仅校验旧密码，不重建 self._vault
+            vault = self._vault
         payload = json.dumps(vault.to_dict(), ensure_ascii=False).encode("utf-8")
         save_file(self.path, new_password, payload)
         self._discard_backups()
-        self._vault = vault
 
     def _discard_backups(self) -> None:
         """删除所有轮转备份（仅改主密码后调用，见 change_password）。"""

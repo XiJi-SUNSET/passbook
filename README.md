@@ -7,7 +7,7 @@
 
 - **轻量便携**：单个 exe 约 49MB，拷进 U 盘双击即用；密码库就存在 exe 旁边，不依赖任何服务
 - **简约界面**：citrus 酸橙信笺风格（米白纸底 + 珊瑚橘点缀），开箱即用、无配置
-- **加密可靠**：Argon2id 派生主密钥 + AES-256-GCM（AEAD），双层密钥——改主密码毫秒级完成
+- **加密可靠**：Argon2id + AES-256-GCM（AEAD），双层密钥结构；改主密码会用新密码重新加密整个库（当前规模下瞬间完成）
 - **稳健存储**：单文件 `.pbk` 原子写，自动保留 2 份轮转备份，坏了能恢复
 - **双形态**：图形界面日常使用；命令行做批量导入导出与备份恢复（recover）
 
@@ -42,7 +42,7 @@ python -m passbook init
 # 2. 加一条
 python -m passbook add --title GitHub --username xiji --url https://github.com --gen
 
-# 3. 查看（密码默认打码，--show 显示明文，--copy 复制到剪贴板 45 秒后自动清空）
+# 3. 查看（密码默认打码；--show 显示明文；--copy 复制到剪贴板，回车后清空）
 python -m passbook get GitHub --show
 python -m passbook get GitHub --copy
 
@@ -70,7 +70,7 @@ python -m passbook search github
 | `folders` | 列出文件夹及条目数 |
 | `export json\|csv [-o file]` | 导出（`json` 可完整还原，`csv` 为 Chrome/Edge 格式） |
 | `import <file.csv\|file.json> [--folder X]` | 导入（重复条目自动跳过） |
-| `passwd` | 改主密码（库内容不重加密） |
+| `passwd` | 改主密码（用新密码重新加密整个库） |
 | `recover [--from 1\|2]` | **从备份恢复**（主库损坏时用） |
 | `gui` | 启动图形界面（源码开发调试用；打包版双击 exe 即是 GUI） |
 
@@ -98,7 +98,7 @@ python -m passbook recover --from 2 # 明确指定用 bak.2
 
 - 条目所有字段（含标题、URL、备注）整体加密，不存在"只加密密码、URL 明文"的泄露
 - 密码生成全部使用 `secrets`（CSPRNG），不用 `random`
-- 复制密码后 45 秒自动清空剪贴板，且仅当内容未被改写时才清
+- 复制密码后自动清空剪贴板：GUI 为 45 秒定时（内容被改写则不误清），CLI 为按回车立即清空
 - 主密码校验与 MAC 比较均为常数时间
 - 错误分类：`主密码错误或被篡改` / `不是密码本文件或版本过新` / `数据损坏，请从备份恢复`
 - 库文件丢失不泄密（无主密码无法解密），但**库文件损坏且无备份 = 数学意义上不可恢复**，请勿删除 `.bak.*`
@@ -150,7 +150,7 @@ py build.py --clean    # 先清 build/ dist/ 再打
 ## 开发
 
 ```bash
-pytest -q          # 155 个测试，全部使用临时目录，不落盘生产数据
+pytest -q          # 179 个测试，全部使用临时目录，不落盘生产数据
 ```
 
 分层约定（新增 GUI 或换框架时不动核心）：

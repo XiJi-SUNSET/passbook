@@ -60,7 +60,12 @@ def save(path: str, password: str, payload: bytes, params: KdfParams | None = No
 
 
 def _rotate_backup(path: str) -> None:
-    """保存前把旧文件向后轮转：path → .bak.1 → .bak.2（超出删除）。"""
+    """保存前把旧文件向后轮转：path → .bak.1 → .bak.2（超出删除）。
+
+    次序及其代价：轮转必须发生在新文件落盘之前——否则新文件一覆盖主路径，
+    旧内容就没有来源可备份了。代价是若随后写盘失败，主路径会暂时没有库文件
+    （内容仍在 .bak.1，可改名救回或走 recover），这个取舍是刻意选择的。
+    """
     bak1 = f"{path}.bak.1"
     bak2 = f"{path}.bak.2"
     if os.path.exists(bak2):
@@ -86,10 +91,32 @@ def restore_from(path: str, backup_path: str) -> None:
 
 
 def atomic_write(path: str, data: bytes) -> None:
-    """先写 .tmp 再 fsync 后 rename：任何时刻 path 要么是旧内容要么是完整新内容。"""
-    tmp = f"{path}.tmp"
+    """先写 .tmp 再 fsync 后 rename：任何时刻 path 要么是旧内容要么是完整新内容。
+
+    - .tmp 名带 pid：同目录多进程并发保存时不会互踩。
+    - POSIX 上额外 fsync 父目录：rename 的持久化依赖目录项落盘，只 fsync
+      文件本身的话，断电后可能回退到旧文件（Windows 无此语义，跳过）。
+    """
+    tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "wb") as f:
         f.write(data)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    _fsync_dir(os.path.dirname(os.path.abspath(path)))
+
+
+def _fsync_dir(path: str) -> None:
+    """尽力 fsync 目录（仅 POSIX；不支持/失败都不影响主流程）。"""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)

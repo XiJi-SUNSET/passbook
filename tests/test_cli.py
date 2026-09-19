@@ -122,8 +122,10 @@ def test_add_login_url_and_notes_are_saved(vault_file, monkeypatch, capsys):
 
 
 def test_get_copy_password(vault_file, monkeypatch):
+    """--copy 至少要把密码放进剪贴板（清空时机见 test_clipboard_cli.py）。"""
     _init(vault_file, monkeypatch)
     monkeypatch.setitem(sys.modules, "pyperclip", FakeClipboard)
+    FakeClipboard.content = ""
     monkeypatch.setattr(cli, "_ask_password", FakeInputs(MASTER))
     cli.main(["-f", str(vault_file), "add", "--title", "X", "--password", "secret"])
     monkeypatch.setattr(cli, "_ask_password", FakeInputs(MASTER))
@@ -235,6 +237,25 @@ def test_export_csv_and_import(vault_file, tmp_path, monkeypatch, capsys):
     assert "B站" in capsys.readouterr().out
 
 
+def test_import_csv_dedup(vault_file, tmp_path, monkeypatch, capsys):
+    """CSV 导入按 (标题, 账号, 链接) 去重：批内重复与库中已有都跳过。"""
+    _init(vault_file, monkeypatch)
+    csv_path = tmp_path / "dup.csv"
+    csv_path.write_text(
+        "name,url,username,password,note\n"
+        "B站,https://bilibili.com,up主,s1,\n"
+        "B站,https://bilibili.com,up主,s2,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_ask_password", FakeInputs(MASTER))
+    assert cli.main(["-f", str(vault_file), "import", str(csv_path)]) == 0
+    assert "已导入 1 条" in capsys.readouterr().out
+    # 同一份 CSV 再导一次：全部跳过，提示语不再撒谎
+    monkeypatch.setattr(cli, "_ask_password", FakeInputs(MASTER))
+    assert cli.main(["-f", str(vault_file), "import", str(csv_path)]) == 0
+    assert "已导入 0 条" in capsys.readouterr().out
+
+
 def test_gen_command(capsys):
     assert cli.main(["gen", "--len", "12"]) == 0
     out = capsys.readouterr().out.strip().splitlines()[0]
@@ -292,6 +313,12 @@ def test_repl_runs_real_commands(monkeypatch, capsys):
 def test_repl_survives_bad_command(monkeypatch, capsys):
     """输错命令时 argparse 会 SystemExit，交互模式必须吞掉并继续。"""
     assert _repl(monkeypatch, ["no-such-cmd", "exit"]) == 0
+
+
+def test_repl_survives_unclosed_quote(monkeypatch, capsys):
+    """`get "foo`（引号未闭合）曾让 shlex 抛 ValueError 直接终止整个会话。"""
+    assert _repl(monkeypatch, ['get "foo', "exit"]) == 0
+    assert "输入解析失败" in capsys.readouterr().out
 
 
 def test_repl_strips_bom_from_pasted_command(monkeypatch, capsys):

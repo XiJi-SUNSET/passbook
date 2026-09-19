@@ -3,7 +3,8 @@
 安全约定：
 - 主密码用 getpass 不回显；init / passwd 输两次确认。
 - get 默认不显示密码明文（--show 才显示明文）。
-- 复制密码走 45s 自动清空。
+- 复制密码后等用户按回车即清空剪贴板（一次性命令进程立刻退出，
+  后台定时器不可能触发，所以清空时机交给用户而不是假装"45 秒后清空"）。
 - 弱主密码警告确认后才允许建库。
 - -f 指定库文件路径 —— 便携场景：exe + .pbk 放任意目录，-f 指过去即用。
 """
@@ -23,7 +24,7 @@ from .core.vault import Vault
 from .io.exporter import export_csv, export_json
 from .io.importer import parse_chrome_csv, parse_passbook_json
 from .paths import vault_path
-from .services.entry_service import EntryService, schedule_clipboard_clear
+from .services.entry_service import EntryService
 from .services.generator import generate, password_strength
 from .services.vault_service import VaultService
 
@@ -98,6 +99,37 @@ def _resolve(es: EntryService, query: str, include_trash: bool = False):
         names = ", ".join(f"{m.id[:8]}({m.title})" for m in matches[:5])
         raise PassbookError(f"匹配到多个条目：{names}，请用更长前缀或完整 id")
     raise PassbookError(f"未找到条目：{query}")
+
+
+def _copy_password_interactive(text: str, what: str = "密码") -> None:
+    """复制文本到剪贴板，用户按回车后清空（内容被改写则不误清）。
+
+    为什么不用"45 秒后自动清空"：一次性命令返回后进程立即退出，
+    任何 daemon 定时器都会被解释器丢掉，回调根本不会执行。用户按下回车
+    才清空，提示与行为一致，也符合"复制 → 去目标程序粘贴 → 回车"的流程。
+    非交互输入（脚本/管道）没法等待，此时明确告知不会自动清空。
+    """
+    import pyperclip
+
+    pyperclip.copy(text)
+    if not sys.stdin.isatty():
+        print(
+            f"{_C['dim']}已复制{what}。当前为非交互输入，无法等待清空，"
+            f"请自行留意剪贴板内容{_C['reset']}"
+        )
+        return
+    try:
+        input(f"已复制{what}，粘贴完成后按回车清空剪贴板…")
+    except (EOFError, KeyboardInterrupt):
+        print()
+    try:
+        if pyperclip.paste() == text:
+            pyperclip.copy("")
+            print(f"{_C['dim']}剪贴板已清空{_C['reset']}")
+        else:
+            print(f"{_C['dim']}剪贴板内容已被改写，保持现状{_C['reset']}")
+    except Exception:
+        pass  # 剪贴板不可用（无图形会话）时静默，不打断主流程
 
 
 def _warn_weak_password(pw: str) -> None:
@@ -215,8 +247,10 @@ def _cmd_get(args) -> int:
     e = _resolve(es, args.query)
     _print_entry(e, show_password=args.show)
     if args.copy:
-        es.copy_password(e.id)
-        print(f"{_C['dim']}已复制密码，45 秒后自动清空（期间你复制了别的则不误清）{_C['reset']}")
+        password = str(e.data.get("password", ""))
+        if not password:
+            raise PassbookError("该条目没有保存密码")
+        _copy_password_interactive(password)
     return 0
 
 
@@ -298,11 +332,7 @@ def _cmd_gen(args) -> int:
     )
     print(pw)
     if args.copy:
-        import pyperclip
-
-        pyperclip.copy(pw)
-        schedule_clipboard_clear(45.0, pw)
-        print("已复制，45 秒后自动清空")
+        _copy_password_interactive(pw, "生成的密码")
     return 0
 
 
@@ -339,21 +369,47 @@ def _cmd_import(args) -> int:
     merged = 0
     if args.source.lower().endswith(".json") or text.lstrip().startswith("{"):
         data = parse_passbook_json(text)
+        raw_folders = data.get("folders", [])
+        raw_entries = data.get("entries", [])
+        if not isinstance(raw_folders, list) or not isinstance(raw_entries, list):
+            raise PassbookError("导入文件结构不完整（folders / entries 必须是数组）")
         folder_map: dict[str, str] = {}
-        for fd in data.get("folders", []):
-            existing = next((f for f in vault.folders if f.name == fd["name"]), None)
-            folder_map[fd["id"]] = existing.id if existing else vault.add_folder(fd["name"]).id
-        for ed in data.get("entries", []):
-            if vault.get_entry(ed["id"]) is not None:
+        for n, fd in enumerate(raw_folders, 1):
+            try:
+                fid, fname = fd["id"], str(fd["name"])
+            except (KeyError, TypeError) as e:
+                raise PassbookError(f"导入文件第 {n} 个文件夹缺少字段：{e}") from None
+            existing = next((f for f in vault.folders if f.name == fname), None)
+            folder_map[fid] = existing.id if existing else vault.add_folder(fname).id
+        for n, ed in enumerate(raw_entries, 1):
+            # 先翻译字段缺失，用户才能拿到"第 N 条"这种可定位的报错
+            try:
+                e = Entry.from_dict(ed)
+            except (KeyError, TypeError) as err:
+                raise PassbookError(
+                    f"导入文件第 {n} 条条目缺少必需字段：{err}"
+                ) from None
+            except ValueError as err:
+                raise PassbookError(f"导入文件第 {n} 条条目非法：{err}") from None
+            if vault.get_entry(e.id) is not None:
                 continue  # 已存在则跳过，幂等
-            e = Entry.from_dict(ed)
             e.folder_id = folder_map.get(e.folder_id)
             vault.add_entry(e)
             merged += 1
     else:
         entries = parse_chrome_csv(text)
         folder_id = _ensure_folder(vault, args.folder) if args.folder else None
+        # CSV 没有 id，按 (标题, 账号, 链接) 去重：库内已有与批内重复都跳过，
+        # 这样"重复条目自动跳过"的提示对两条导入路径都成立。
+        seen = {
+            (e.title, str(e.data.get("username", "")), str(e.data.get("url", "")))
+            for e in vault.entries
+        }
         for e in entries:
+            key = (e.title, str(e.data.get("username", "")), str(e.data.get("url", "")))
+            if key in seen:
+                continue
+            seen.add(key)
             e.folder_id = folder_id
             vault.add_entry(e)
             merged += 1
@@ -380,7 +436,7 @@ def _cmd_passwd(args) -> int:
     new = _ask_password("新主密码：", confirm=True)
     _warn_weak_password(new)
     VaultService(args.file).change_password(old, new)
-    print("主密码已更改（库内容未动，仅重包密钥）")
+    print("主密码已更改（库已用新密码重新加密）")
     return 0
 
 
@@ -447,7 +503,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = _sub("get", "查看条目（id 或标题）")
     p.add_argument("query")
     p.add_argument("--show", action="store_true", help="显示密码明文")
-    p.add_argument("--copy", action="store_true", help="复制密码到剪贴板（45s 自动清空）")
+    p.add_argument("--copy", action="store_true", help="复制密码到剪贴板（回车后清空）")
     p.set_defaults(handler=_cmd_get)
 
     p = _sub("search", "搜索（标题/用户名/URL）")
@@ -578,7 +634,14 @@ def _repl() -> int:
             continue
 
         try:
-            _run(shlex.split(line))
+            argv = shlex.split(line)
+        except ValueError as e:
+            # 例：`get "foo`（引号未闭合）。不能让它打死整个交互会话——
+            # _repl 存在的目的就是"别让窗口一闪而过"，被一个引号闪退就太讽刺了。
+            print(f"{_C['red']}输入解析失败{_C['reset']}：{e}")
+            continue
+        try:
+            _run(argv)
         except SystemExit:
             pass  # argparse 已自行打印用法或错误信息，交互模式继续
 

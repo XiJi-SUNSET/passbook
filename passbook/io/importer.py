@@ -38,18 +38,20 @@ def parse_chrome_csv(text: str) -> list[Entry]:
         url = (row.get(c_url) or "").strip()
         if not title:
             title = url or "未命名"
-        entries.append(
-            Entry(
-                type="login",
-                data={
-                    "title": title,
-                    "url": url,
-                    "username": (row.get(c_user) or "").strip(),
-                    "password": row.get(c_pass) or "",
-                    "notes": (row.get(c_note) or "").strip(),
-                },
-            )
-        )
+        # 只写有内容的字段：空串字段会让详情页/打印多出一串空行，也白占 payload
+        data: dict = {"title": title}
+        if url:
+            data["url"] = url
+        username = (row.get(c_user) or "").strip()
+        if username:
+            data["username"] = username
+        password = row.get(c_pass) or ""
+        if password:
+            data["password"] = password
+        notes = (row.get(c_note) or "").strip()
+        if notes:
+            data["notes"] = notes
+        entries.append(Entry(type="login", data=data))
     return entries
 
 

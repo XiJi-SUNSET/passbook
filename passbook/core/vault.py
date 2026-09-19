@@ -7,11 +7,12 @@
 from dataclasses import dataclass, field
 
 from .entry import Entry, new_id, now_iso
+from .exceptions import FormatError
 
 FORMAT_VERSION = 1
 
 
-@dataclass
+@dataclass(eq=False)  # 同 Entry：实体按身份比较，不按字段值比较
 class Folder:
     name: str = ""
     id: str = field(default_factory=new_id)
@@ -25,12 +26,21 @@ class Folder:
         return cls(id=d["id"], name=d.get("name", ""), created_at=d["created_at"])
 
 
-@dataclass
+@dataclass(eq=False)  # 同 Entry：实体按身份比较
 class Vault:
     folders: list[Folder] = field(default_factory=list)
     entries: list[Entry] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+    # id → Entry 索引：让 get_entry 从 O(n) 降到 O(1)。
+    # 所有增删都在本类方法内同步维护；get_entry 对失配做兜底自愈，
+    # 即使有人绕过方法直接改 entries 也不会返回错误结果。
+    _by_id: dict[str, Entry] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        self._by_id = {e.id: e for e in self.entries}
 
     def touch(self) -> None:
         self.updated_at = now_iso()
@@ -40,11 +50,19 @@ class Vault:
         if self.get_entry(entry.id) is not None:
             raise ValueError(f"条目 id 已存在：{entry.id}")
         self.entries.append(entry)
+        self._by_id[entry.id] = entry
         self.touch()
         return entry
 
     def get_entry(self, entry_id: str) -> Entry | None:
-        return next((e for e in self.entries if e.id == entry_id), None)
+        entry = self._by_id.get(entry_id)
+        if entry is not None:
+            return entry
+        # 兜底：entries 被外部直接改动时索引会失配，回退扫描并顺手修复
+        entry = next((e for e in self.entries if e.id == entry_id), None)
+        if entry is not None:
+            self._by_id[entry_id] = entry
+        return entry
 
     def update_entry(self, entry: Entry) -> None:
         target = self.get_entry(entry.id)
@@ -52,6 +70,7 @@ class Vault:
             raise KeyError(f"条目不存在：{entry.id}")
         idx = self.entries.index(target)
         self.entries[idx] = entry
+        self._by_id[entry.id] = entry
         entry.touch()
         self.touch()
 
@@ -78,6 +97,7 @@ class Vault:
         if e is None:
             raise KeyError(f"条目不存在：{entry_id}")
         self.entries.remove(e)
+        self._by_id.pop(entry_id, None)
         self.touch()
 
     def purge_trash(self) -> int:
@@ -85,6 +105,7 @@ class Vault:
         trash = [e for e in self.entries if e.deleted_at is not None]
         for e in trash:
             self.entries.remove(e)
+            self._by_id.pop(e.id, None)
         if trash:
             self.touch()
         return len(trash)
@@ -162,13 +183,24 @@ class Vault:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Vault":
-        v = cls(
-            folders=[Folder.from_dict(f) for f in d.get("folders", [])],
-            entries=[Entry.from_dict(e) for e in d.get("entries", [])],
-            created_at=d.get("created_at", now_iso()),
-            updated_at=d.get("updated_at", now_iso()),
-        )
-        # 只认自己支持的版本；过新版本拒绝加载，防止静默丢字段
-        if d.get("format_version", FORMAT_VERSION) > FORMAT_VERSION:
-            raise ValueError(f"保险库版本过新：{d.get('format_version')}")
-        return v
+        if not isinstance(d, dict):
+            raise FormatError("库文件结构不完整（顶层不是对象）")
+        # 版本检查放在构造之前：只认自己支持的版本，过新版本拒绝加载，
+        # 防止把不认识的结构"尽力解析"后静默丢字段
+        try:
+            version = int(d.get("format_version", FORMAT_VERSION))
+        except (TypeError, ValueError):
+            raise FormatError("库文件结构不完整（format_version 非法）") from None
+        if version > FORMAT_VERSION:
+            raise FormatError(f"保险库版本过新：{version}（请升级密码本后再打开）")
+        try:
+            return cls(
+                folders=[Folder.from_dict(f) for f in d.get("folders", [])],
+                entries=[Entry.from_dict(e) for e in d.get("entries", [])],
+                created_at=d.get("created_at", now_iso()),
+                updated_at=d.get("updated_at", now_iso()),
+            )
+        except (KeyError, TypeError) as e:
+            # 字段缺失/结构错乱翻译成可行动的 FormatError（提示 recover），
+            # 而不是让裸 KeyError traceback 冲到用户面前
+            raise FormatError(f"库文件结构不完整：{e}") from None

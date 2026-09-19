@@ -12,7 +12,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QDialog
 
-from passbook.core.exceptions import CredentialsError
+from passbook.core.exceptions import CredentialsError, PassbookError
 from passbook.crypto.kdf import KdfParams
 from passbook.ui import theme
 from passbook.ui.dialogs import ChangeMasterDialog, GeneratorDialog, SetupDialog, UnlockDialog
@@ -78,7 +78,7 @@ def test_session_wipe_zeroes_password_buffer(tmp_path):
 def test_session_change_password_swaps_buffer(tmp_path):
     s = _session(tmp_path)
     old = s._password
-    s.change_password("NewPass!2026")
+    s.change_password(MASTER, "NewPass!2026")
     assert bytes(old) != b"NewPass!2026"  # 旧缓存已被清零覆写
     assert bytes(s._password).decode("utf-8") == "NewPass!2026"
 
@@ -86,6 +86,15 @@ def test_session_change_password_swaps_buffer(tmp_path):
     with pytest.raises(CredentialsError):
         s.unlock(MASTER)
     s.unlock("NewPass!2026")  # 新密码有效
+
+
+def test_session_change_password_rejects_wrong_current(tmp_path):
+    """界面上填的"当前主密码"必须真正校验：打错不能改成功（审计 P3#5）。"""
+    s = _session(tmp_path)
+    with pytest.raises(PassbookError):
+        s.change_password("wrong-current", "NewPass!2026")
+    s.lock()
+    s.unlock(MASTER)  # 原密码仍然有效，说明什么都没改
 
 
 # ---------- theme ----------
@@ -154,6 +163,14 @@ def test_generator_dialog_makes_valid_password(qapp):
     # 关掉"符号"后仍能生成（各字符集至少一类的约束下）
     dlg._symbols.setChecked(False)
     assert dlg.password
+
+
+def test_generator_dialog_copy_uses_auto_clear(qapp):
+    """生成器弹窗的"复制"按钮与主界面同一套清空逻辑（审计 P3#3）。"""
+    dlg = GeneratorDialog()
+    dlg._copy()
+    assert QApplication.clipboard().text() == dlg.password
+    assert "45 秒" in dlg._copy_hint.text()
 
 
 # ---------- 登录账号智能标签 ----------
@@ -236,6 +253,38 @@ def test_main_window_list_search_and_copy(qapp, tmp_path):
     win.close()
     assert not s.unlocked
     assert s._password is None
+
+
+def test_change_master_uses_dialog_current_password(qapp, tmp_path, monkeypatch):
+    """改密码对话框的"当前主密码"要真的传给会话：打错时被拒并提示（审计 P3#5）。"""
+    from PySide6.QtWidgets import QDialog, QMessageBox
+
+    from passbook.ui import main_window as mw
+
+    s = _session(tmp_path)
+
+    class FakeDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, *a, **k):
+            self.old_password = "wrong-current"
+            self.new_password = "NewPass!2026"
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    warnings: list[str] = []
+    monkeypatch.setattr(mw, "ChangeMasterDialog", FakeDialog)
+    monkeypatch.setattr(
+        QMessageBox, "warning", staticmethod(lambda *a, **k: warnings.append(a[2]))
+    )
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+
+    win = MainWindow(s)
+    win._change_master()
+    assert warnings and "当前主密码不正确" in warnings[0]
+    assert bytes(s._password).decode("utf-8") == MASTER  # 密码未被改动
+    win.close()
 
 
 # ---------- 一键导出明文副本 ----------

@@ -1,33 +1,18 @@
-"""条目业务编排测试：创建校验、部分更新、文件夹、收藏、软删、剪贴板。"""
+"""条目业务编排测试：创建校验、部分更新、文件夹、收藏、软删。
 
-import sys
-import time
+剪贴板行为不在这里：CLI 侧见 test_clipboard_cli.py（按回车清空），
+GUI 侧见 test_gui.py（QTimer 45 秒后清空）。
+"""
 
 import pytest
 
 from passbook.core.vault import Vault
 from passbook.services.entry_service import EntryService
-from passbook.services.entry_service import schedule_clipboard_clear
 from passbook.core.exceptions import PassbookError
 
 
-class FakeClipboard:
-    """测试用剪贴板替身（pyperclip 延迟导入，monkeypatch sys.modules）。"""
-
-    content = ""
-
-    @classmethod
-    def copy(cls, text: str) -> None:
-        cls.content = text
-
-    @classmethod
-    def paste(cls) -> str:
-        return cls.content
-
-
 @pytest.fixture
-def service(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pyperclip", FakeClipboard)
+def service():
     return EntryService(Vault())
 
 
@@ -109,32 +94,13 @@ def test_search(service):
     assert len(service.search("不存在")) == 0
 
 
-def test_copy_password(service):
-    e = service.create(data={"title": "x", "password": "secret123"})
-    service.copy_password(e.id, ttl=10)
-    assert FakeClipboard.content == "secret123"
-
-
-def test_copy_password_clears_after_ttl(service):
-    e = service.create(data={"title": "x", "password": "secret123"})
-    service.copy_password(e.id, ttl=0.1)
-    assert FakeClipboard.content == "secret123"
-    time.sleep(0.4)
-    assert FakeClipboard.content == ""  # 定时清空生效
-
-
-def test_copy_password_not_cleared_if_changed(service):
-    e = service.create(data={"title": "x", "password": "secret123"})
-    service.copy_password(e.id, ttl=0.1)
-    FakeClipboard.copy("用户自己复制了别的内容")
-    time.sleep(0.4)
-    assert FakeClipboard.content == "用户自己复制了别的内容"  # 不误清
-
-
-def test_copy_password_without_password_raises(service):
-    e = service.create(data={"title": "无密码"})
-    with pytest.raises(PassbookError):
-        service.copy_password(e.id)
+def test_update_favorite_via_update(service):
+    """favorite 通过 update 一并更新：走 update_entry，时间戳同步刷新。"""
+    e = service.create(data={"title": "x"})
+    before = e.updated_at
+    service.update(e.id, {"username": "u"}, favorite=True)
+    assert e.favorite is True
+    assert e.updated_at >= before
 
 
 def test_get_missing_raises(service):
